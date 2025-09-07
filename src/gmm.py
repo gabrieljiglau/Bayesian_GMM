@@ -48,29 +48,30 @@ class NormalDistribution:
 
 class MixtureModel:
 
-    def __init__(self, no_clusters: int, x_train, y_train, x_test, y_test):
+    def __init__(self, no_clusters: int, x_train, y_train):
 
         self.x_train = x_train
         self.y_train = y_train
-        self.x_test = x_test
-        self.y_test = y_test
         self.K = no_clusters
         self.means = self.x_train.sample(n=self.K, random_state=7, replace=False).to_numpy()
         self.gaussians = [NormalDistribution(self.means[i], 1 / self.K, self.x_train.shape[1]) for i in range(self.K)]
         self.responsibilities = np.zeros((self.K, self.x_train.shape[0])) # how many instances? the number of rows
 
-    def train(self, iterations: int=10, out_probs='../models/responsibilities.npy', out_means='../models/means.npy',
-                out_covariances='../models/cov_matrices.npy', out_weights='../models/mixing_weights.npy'):
+    def train(self, iterations: int=20, out_means='../models/means.npy', out_covariances='../models/cov_matrices.npy',
+              out_weights='../models/mixing_weights.npy'):
+
 
         for i in range(iterations):
             print(f"Now at iteration {i}")
+
             self.e_step()
             self.m_step()
-            self.evaluation_loop(self.x_train, self.y_train, training=True)
 
-        self.evaluation_loop(self.x_test, self.y_test, training=False)
+            self.evaluate_performance(self.x_train, self.y_train, training=True)
 
-        np.save(out_probs, self.responsibilities)
+            # log likelihood should be increasing (it's a negative number)
+            print(f"current log_likelihood \n = {self.compute_log_likelihood()}")
+
         np.save(out_means, self.means)
 
         cov_matrices = [gaussian.covariance for gaussian in self.gaussians]
@@ -80,28 +81,58 @@ class MixtureModel:
         np.save(out_weights, mixing_weights)
         return self
 
-    def evaluation_loop(self, x, y, training:bool):
-        correct = 0
+    def predict(self, x_test, y_test, out_means='../models/means.npy', out_covariances='../models/cov_matrices.npy',
+                out_weights='../models/mixing_weights.npy'):
+
+        if os.path.exists(out_means) and os.path.exists(out_covariances) and os.path.exists(out_weights):
+            print(f"Loading the trained parameters \n")
+            mixing_weights = np.load(out_weights)
+            means = np.load(out_means)
+            cov_matrices = np.load(out_covariances)
+
+            self.gaussians = [NormalDistribution(means[i], mixing_weights[i], x_test.shape[0], cov_matrices[i]) for i in
+                              range(self.K)]
+            self.evaluate_performance(x_test, y_test, training=False)
+
+        else:
+            print(f"Training the gaussian mixture model first \n")
+            self.train()
+            self.evaluate_performance(x_test, y_test, training=True)
+
+
+    def evaluate_performance(self, x, y, training:bool):
+
+        num_classes = y.nunique().iloc[0]
         x_np = x.to_numpy()
         y_np = y.to_numpy().flatten()
+
+        cluster_indices = [[] for _ in range(self.K)]
         for idx, (x, y) in enumerate(zip(x_np, y_np)):
 
-            # y_pred = np.argmax(self.responsibilities[:, idx], axis=0)
-            # print(f"y_pred = {y_pred}, y_true = {y}")
             result_probs = [gaussian.density_function(x) * gaussian.mixing_weight for gaussian in self.gaussians]
             result_probs /= np.sum(result_probs)
-            y_pred = np.argmax(result_probs)
-            if y_pred == y:
-                correct += 1
+            cluster_idx = np.argmax(result_probs)
+            cluster_indices[cluster_idx].append((idx, y))
+
+        # assigning the true labels to each gaussian component
+        cluster_labels = relabel_data(self.K, cluster_indices, num_classes)
+
+        correct = 0
+        for i, cluster in enumerate(cluster_indices):
+            for (idx, true_label) in cluster:
+                if cluster_labels[i] == true_label:
+                    correct += 1
 
         if training:
-            print(f"Training accuracy = {correct / len(x_np) * 100}")
+            print(f"Training accuracy = {(correct / len(x_np)) * 100}")
         else:
-            print(f"Testing accuracy = {correct / len(x_np) * 100}")
+            print(f"Testing accuracy = {(correct / len(x_np)) * 100}")
+
+        return cluster_indices, cluster_labels
 
 
     def e_step(self):
-        # pdf evaluations for each data point
+        # pdf evaluations for each data point ~ P(z | x, theta)
         pdf_evals = np.zeros((self.K, self.x_train.shape[0]))
         for cluster in range(self.K):
             for row_index, row in enumerate(self.x_train.itertuples()):
@@ -109,25 +140,27 @@ class MixtureModel:
                 x_values = np.array(row[1:])
                 pdf_evals[cluster, row_index] = self.gaussians[cluster].density_function(x_values)
 
-        # update the responsibilities, P(z | x, theta)
+        # update the responsibilities (pdf evaluations weighted by the mixing_weights)
         for cluster in range(self.K):
             for instance_idx in range(self.x_train.shape[0]):
                 nominator = self.gaussians[cluster].mixing_weight * pdf_evals[cluster, instance_idx]
                 weights = np.array([g.mixing_weight for g in self.gaussians])
-                denominator = np.sum(weights * pdf_evals[:, instance_idx]) # self.mixing_weights
+                denominator = np.sum(weights * pdf_evals[:, instance_idx])
                 self.responsibilities[cluster, instance_idx] = nominator / denominator
+
 
     def m_step(self):
         # update the means, a vector from R^d, where d = K (the number of clusters)
         for cluster in range(self.K):
             nominator = np.zeros(self.x_train.shape[1])
+
             for row_index, row in enumerate(self.x_train.itertuples()):
                 x_values = np.array(row[1:])
                 nominator += self.responsibilities[cluster, row_index] * x_values  # gamma_ij * x_i
             self.means[cluster] = nominator / np.sum(self.responsibilities[cluster, :])
 
         # update mixing weights
-        new_weights = [np.sum(self.responsibilities[cluster, :]) / self.K for cluster in range(self.K)]
+        new_weights = [ float(np.sum(self.responsibilities[cluster, :])) / self.x_train.shape[0] for cluster in range(self.K)]
         for i in range(self.K):
             self.gaussians[i].mixing_weight = new_weights[i]
 
@@ -135,10 +168,26 @@ class MixtureModel:
         for cluster_idx in range(len(self.gaussians)):
             nominator = np.zeros((self.x_train.shape[1], self.x_train.shape[1]))
             denominator = np.zeros((self.x_train.shape[1], self.x_train.shape[1]))
+
             for row_index, row in enumerate(self.x_train.itertuples()):
                 data_diff = np.array(row[1:]) - self.means[cluster_idx]
                 data_diff = data_diff.reshape(-1, 1) # (d, 1)
+
                 nominator += self.responsibilities[cluster_idx, row_index] * (data_diff @ data_diff.transpose())
                 denominator += self.responsibilities[cluster_idx , row_index]
             self.gaussians[cluster_idx].covariance = nominator / denominator
+
+
+    def compute_log_likelihood(self):
+
+        log_likelihood = 0
+        for row in self.x_train.itertuples():
+            prob_sum = 0
+            for gaussian in self.gaussians:
+                x_values = np.array(row[1:])
+                prob_sum += gaussian.mixing_weight * gaussian.density_function(x_values)
+            log_likelihood += np.log(prob_sum + 1e-12)
+
+        return log_likelihood
+
 
