@@ -90,8 +90,8 @@ class MixtureModel:
             means = np.load(out_means)
             cov_matrices = np.load(out_covariances)
 
-            self.gaussians = [NormalDistribution(means[i], mixing_weights[i], x_test.shape[0], cov_matrices[i]) for i in
-                              range(self.K)]
+            self.gaussians = [NormalDistribution(means[i], mixing_weights[i], x_test.shape[0], cov_matrices[i])
+                              for i in range(self.K)]
             self.evaluate_performance(x_test, y_test, training=False)
 
         else:

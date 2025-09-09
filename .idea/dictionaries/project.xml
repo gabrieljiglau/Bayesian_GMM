@@ -2,6 +2,8 @@
   <dictionary name="project">
     <words>
       <w>gaussians</w>
+      <w>kullback</w>
+      <w>leibler</w>
     </words>
   </dictionary>
 </component>
