@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from scipy.stats import dirichlet
 
 def init_cov_matrix(dim: int, small: bool=True):
 
@@ -48,4 +49,5 @@ def relabel_data(num_clusters, cluster_indices, num_classes):
         cluster_labels[i] = np.argmax(frequencies)
     return cluster_labels
 
-
+def dirichlet_pdf(weights):
+    return dirichlet(weights)

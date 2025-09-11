@@ -4,6 +4,7 @@
       <w>gaussians</w>
       <w>kullback</w>
       <w>leibler</w>
+      <w>wishart</w>
     </words>
   </dictionary>
 </component>

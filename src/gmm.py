@@ -1,11 +1,8 @@
 import math
 import os.path
-
 import numpy as np
-import pandas as pd
-from numpy.ma.core import shape
-from scipy.linalg import fractional_matrix_power
 from utils import *
+from scipy.linalg import fractional_matrix_power
 
 class NormalDistribution:
 
@@ -57,9 +54,8 @@ class MixtureModel:
         self.gaussians = [NormalDistribution(self.means[i], 1 / self.K, self.x_train.shape[1]) for i in range(self.K)]
         self.responsibilities = np.zeros((self.K, self.x_train.shape[0])) # how many instances? the number of rows
 
-    def train(self, iterations: int=20, out_means='../models/means.npy', out_covariances='../models/cov_matrices.npy',
-              out_weights='../models/mixing_weights.npy'):
-
+    def train(self, iterations: int=20, out_means='../models/standard_GMM/means.npy', out_covariances='../models/standard_GMM/cov_matrices.npy',
+              out_weights='../models/standard_GMM/mixing_weights.npy'):
 
         for i in range(iterations):
             print(f"Now at iteration {i}")
@@ -189,5 +185,3 @@ class MixtureModel:
             log_likelihood += np.log(prob_sum + 1e-12)
 
         return log_likelihood
-
-

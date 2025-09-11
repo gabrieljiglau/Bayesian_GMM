@@ -18,5 +18,5 @@ if __name__ == '__main__':
     K = 3
     x_train, y_train, x_test, y_test = split_data(numeric_iris)
     mixture_model = MixtureModel(K, x_train, y_train)
-    # mixture_model.train()
+    mixture_model.train()
     mixture_model.predict(x_test, y_test)
