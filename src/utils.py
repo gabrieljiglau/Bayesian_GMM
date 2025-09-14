@@ -60,7 +60,7 @@ def init_cluster_means(x_train, no_clusters):
 
     return labels, k_means.cluster_centers_
 
-def init_soft_counts(no_clusters, labels, x_train):
+def init_responsibilities(no_clusters, labels, x_train):
 
     """
     simulate the soft counts, since we used k-means (hard clustering algorithm) to initialize the clusters
@@ -77,20 +77,20 @@ def init_soft_counts(no_clusters, labels, x_train):
 
 def compute_weighted_mean(x_train, labels, no_clusters, soft_counts):
 
-    print(f"type(soft_counts) = {type(soft_counts)}")  ## de ce primesc int aici ?
-
     weighted_means = np.zeros((no_clusters, x_train.shape[1]))
+    normalization_terms = []
+    for k in range(no_clusters):
+        norm_term = np.sum(soft_counts[k, :])
+        for i, row in enumerate(x_train.itertuples()):
+            weighted_means[k,:] += (np.array(row[1:]) * soft_counts[k, i]) / norm_term
 
-    for i, row in enumerate(x_train.itertuples()):
-        current_cluster = labels[i]
-        weighted_means[current_cluster,:] += np.array(row[1:]) * soft_counts[current_cluster, i]
-
+        weighted_means[k, :] /= norm_term
     return weighted_means
 
 
-def init_precision_matrix(x_train, labels, no_clusters):
+def init_precision_matrix(x_train, labels, no_clusters, soft_counts):
 
-    weighted_means = compute_weighted_mean(x_train, labels, no_clusters, x_train.shape[0])
+    weighted_means = compute_weighted_mean(x_train, labels, no_clusters, soft_counts)
     covariance_matrix = 0
     for i, x_row in enumerate(x_train.itertuples()):
         data_diff =  weighted_means[labels[i]] / x_row[1:]
@@ -101,11 +101,9 @@ def init_precision_matrix(x_train, labels, no_clusters):
     covariance_matrix /= x_train.shape[0]
     precision_matrix = np.linalg.inv(covariance_matrix)
     # print(np.all(np.linalg.eigvals(precision_matrix) > 0)) # sanity check, all eigenvalues should be positive
-    return np.linalg.inv(covariance_matrix)
+    return precision_matrix
 
-
-## aici se plange
-def init_priors(x_train, labels, no_clusters):
+def init_priors(x_train, labels, no_clusters, soft_counts):
 
     priors, data_mean = [], []
     cols = x_train.columns[:-1]
@@ -116,7 +114,7 @@ def init_priors(x_train, labels, no_clusters):
     priors.append(data_mean)
     priors.append(1)  # the confidence in our means; 1 ~ 'not so much'
     priors.append(x_train.shape[1] + 2)  # degree of freedom
-    priors.append(init_precision_matrix(x_train, labels, no_clusters))
+    priors.append(init_precision_matrix(x_train, labels, no_clusters, soft_counts))
 
     return priors
 
