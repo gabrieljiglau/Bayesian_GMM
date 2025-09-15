@@ -14,7 +14,7 @@ def init_cov_matrix(dim: int, small: bool=True):
 def _standardize_data(df: pd.DataFrame):
 
     for col in df.columns[:-1]: # col is just the column's name
-        df[col] = (df[col] - df[col].mean()) / df[col].std()
+        df[col] = (df[col] - df[col].cluster_mean()) / df[col].std()
 
     return df
 
@@ -41,7 +41,9 @@ def split_data(df: pd.DataFrame):
 
 def relabel_data(num_clusters, cluster_indices, num_classes):
 
-    # assigning the true labels to each gaussian component, based on 'majority vote relabelling'
+    """
+    assigning the true labels to each gaussian component, based on 'majority vote relabelling'
+    """
     cluster_labels = [0 for _ in range(num_clusters)]
     for i, cluster in enumerate(cluster_indices):
         frequencies = [0 for _ in range(num_classes)]
@@ -49,9 +51,6 @@ def relabel_data(num_clusters, cluster_indices, num_classes):
             frequencies[true_label] += 1
         cluster_labels[i] = np.argmax(frequencies)
     return cluster_labels
-
-def dirichlet_pdf(weights):
-    return dirichlet(weights)
 
 def init_cluster_means(x_train, no_clusters):
 
@@ -75,10 +74,9 @@ def init_responsibilities(no_clusters, labels, x_train):
     return soft_counts
 
 
-def compute_weighted_mean(x_train, labels, no_clusters, soft_counts):
+def weighted_mean_m_step(x_train, no_clusters, soft_counts):
 
     weighted_means = np.zeros((no_clusters, x_train.shape[1]))
-    normalization_terms = []
     for k in range(no_clusters):
         norm_term = np.sum(soft_counts[k, :])
         for i, row in enumerate(x_train.itertuples()):
@@ -90,7 +88,7 @@ def compute_weighted_mean(x_train, labels, no_clusters, soft_counts):
 
 def init_precision_matrix(x_train, labels, no_clusters, soft_counts):
 
-    weighted_means = compute_weighted_mean(x_train, labels, no_clusters, soft_counts)
+    weighted_means = weighted_mean_m_step(x_train, no_clusters, soft_counts)
     covariance_matrix = 0
     for i, x_row in enumerate(x_train.itertuples()):
         data_diff =  weighted_means[labels[i]] / x_row[1:]
@@ -103,19 +101,15 @@ def init_precision_matrix(x_train, labels, no_clusters, soft_counts):
     # print(np.all(np.linalg.eigvals(precision_matrix) > 0)) # sanity check, all eigenvalues should be positive
     return precision_matrix
 
+def get_data_mean(x_train):
+
+    data_mean = []
+    for i in range(x_train.shape[1]):
+        dimension_mean = x_train.iloc[:, i].mean()
+        data_mean.append(dimension_mean)
+    return data_mean
+
 def init_priors(x_train, labels, no_clusters, soft_counts):
 
-    priors, data_mean = [], []
-    cols = x_train.columns[:-1]
-    for i in range(len(cols)):
-        dimension_mean = x_train[cols[i]].mean()
-        data_mean.append(dimension_mean)
-
-    priors.append(data_mean)
-    priors.append(1)  # the confidence in our means; 1 ~ 'not so much'
-    priors.append(x_train.shape[1] + 2)  # degree of freedom
-    priors.append(init_precision_matrix(x_train, labels, no_clusters, soft_counts))
-
-    return priors
-
+    return [get_data_mean(x_train), 1, x_train.shape[1] + 2, init_precision_matrix(x_train, labels, no_clusters, soft_counts)]
 
