@@ -59,6 +59,11 @@ def init_cluster_means(x_train, no_clusters):
 
     return labels, k_means.cluster_centers_
 
+def log_det_cholesky(matrix):
+
+    cholesky_det = np.linalg.cholesky(matrix)
+    return np.sum(np.log(np.diag(cholesky_det))) * 2
+
 def init_responsibilities(no_clusters, labels, x_train):
 
     """
@@ -71,10 +76,10 @@ def init_responsibilities(no_clusters, labels, x_train):
         soft_counts[labels[index], index] += 1
 
     soft_counts /= ((additive * no_clusters) + 1) # normalization
-    return soft_counts
+    return np.array(soft_counts)
 
 
-def weighted_mean_m_step(x_train, no_clusters, soft_counts):
+def _weighted_mean(x_train, no_clusters, soft_counts):
 
     weighted_means = np.zeros((no_clusters, x_train.shape[1]))
     for k in range(no_clusters):
@@ -88,28 +93,27 @@ def weighted_mean_m_step(x_train, no_clusters, soft_counts):
 
 def init_precision_matrix(x_train, labels, no_clusters, soft_counts):
 
-    weighted_means = weighted_mean_m_step(x_train, no_clusters, soft_counts)
-    covariance_matrix = 0
-    for i, x_row in enumerate(x_train.itertuples()):
-        data_diff =  weighted_means[labels[i]] / x_row[1:]
-        data_diff = data_diff.reshape(-1, 1)
-        covariance_matrix += data_diff @ data_diff.transpose()
+    weighted_means = _weighted_mean(x_train, no_clusters, soft_counts)
+    covariance_matrices = []
+    for k in range(no_clusters):
+        covariance_matrix = 0
+        for data_idx, x_row in enumerate(x_train.itertuples()):
+            data_diff = x_row[1:] - weighted_means[labels[data_idx]]
+            data_diff = data_diff.reshape(-1, 1)
+            covariance_matrix += (data_diff @ data_diff.transpose()) * soft_counts[k][data_idx]
+        covariance_matrices.append(covariance_matrix / x_train.shape[0])
 
-    # print(f"cov_matrix = {covariance_matrix}")
-    covariance_matrix /= x_train.shape[0]
-    precision_matrix = np.linalg.inv(covariance_matrix)
-    # print(np.all(np.linalg.eigvals(precision_matrix) > 0)) # sanity check, all eigenvalues should be positive
-    return precision_matrix
+    return [np.linalg.inv(cov_matrix) for cov_matrix in covariance_matrices]
 
-def get_data_mean(x_train):
+def _data_mean(x_train):
 
-    data_mean = []
+    data_mean = np.zeros(x_train.shape[1])
     for i in range(x_train.shape[1]):
         dimension_mean = x_train.iloc[:, i].mean()
-        data_mean.append(dimension_mean)
+        data_mean[i] = dimension_mean
     return data_mean
 
 def init_priors(x_train, labels, no_clusters, soft_counts):
 
-    return [get_data_mean(x_train), 1, x_train.shape[1] + 2, init_precision_matrix(x_train, labels, no_clusters, soft_counts)]
+    return [_data_mean(x_train), 1, x_train.shape[1] + 2, init_precision_matrix(x_train, labels, no_clusters, soft_counts)]
 
