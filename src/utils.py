@@ -91,7 +91,7 @@ def _weighted_mean(x_train, no_clusters, soft_counts):
     return weighted_means
 
 
-def init_precision_matrix(x_train, labels, no_clusters, soft_counts):
+def init_precision_matrix(x_train, labels, no_clusters, soft_counts, dim_data):
 
     weighted_means = _weighted_mean(x_train, no_clusters, soft_counts)
     covariance_matrices = []
@@ -103,7 +103,7 @@ def init_precision_matrix(x_train, labels, no_clusters, soft_counts):
             covariance_matrix += (data_diff @ data_diff.transpose()) * soft_counts[k][data_idx]
         covariance_matrices.append(covariance_matrix / x_train.shape[0])
 
-    return [np.linalg.inv(cov_matrix) for cov_matrix in covariance_matrices]
+    return [np.linalg.inv(cov_matrix + np.eye(dim_data) * 1e-6) for cov_matrix in covariance_matrices]
 
 def _data_mean(x_train):
 
@@ -113,7 +113,8 @@ def _data_mean(x_train):
         data_mean[i] = dimension_mean
     return data_mean
 
-def init_priors(x_train, labels, no_clusters, soft_counts):
+def init_priors(x_train, labels, no_clusters, soft_counts, dim_data):
 
-    return [_data_mean(x_train), 1, x_train.shape[1] + 2, init_precision_matrix(x_train, labels, no_clusters, soft_counts)]
+    return [_data_mean(x_train), 1, x_train.shape[1] + 2,
+            init_precision_matrix(x_train, labels, no_clusters, soft_counts, dim_data)]
 
