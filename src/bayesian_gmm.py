@@ -1,7 +1,10 @@
+import os
 import numpy as np
 from scipy.stats import dirichlet
+from sklearn.metrics import accuracy_score
 from scipy.special import logsumexp, psi  # psi is the logarithmic derivative of the gamma function
-from utils import init_cluster_means, init_priors, init_responsibilities, log_det_cholesky
+from utils import init_cluster_means, init_priors, init_responsibilities, log_det_cholesky, map_clusters, \
+                   compute_log_likelihood, akaike_information_criterion, gaussian_pdf
 
 
 class NormalInverseWishartDistribution:
@@ -47,10 +50,10 @@ class NormalInverseWishartDistribution:
 
 class BayesianMixtureModel:
 
-    def __init__(self, no_clusters: int, epsilon=1e-14):
+    def __init__(self, no_clusters: int, epsilon=1e-6):
 
         self.no_clusters = no_clusters
-        self.weights = [(1 / no_clusters) for _ in range(no_clusters)]
+        self.weights = [1 for _ in range(no_clusters)]
         self.dirichlet_prior = np.ones(self.no_clusters)
         self.prior_hyperparameters = []
         self.responsibilities = []
@@ -58,7 +61,8 @@ class BayesianMixtureModel:
         self.epsilon = epsilon
 
 
-    def train(self, num_iterations, x_train, y_train=None, eps=1e-6):
+    def train(self, num_iterations, x_train, y_train, eps=1e-6, out_means='../models/bayesian_GMM/means.npy',
+              out_covariances='../models/bayesian_GMM/cov_matrices.npy', out_weights='../models/bayesian_GMM/mixing_weights.npy'):
 
         # parameter initialization
         dim_data = x_train.shape[1]
@@ -66,24 +70,86 @@ class BayesianMixtureModel:
 
         self.responsibilities = init_responsibilities(self.no_clusters, labels, x_train)
         # priors: data_mean, strength_mean (the confidence in the data_mean), degree_of_freedom, precision_matrix
-        self.prior_hyperparameters = init_priors(x_train, labels, self.no_clusters, self.responsibilities, dim_data)
+        self.prior_hyperparameters = init_priors(x_train, labels, self.no_clusters, self.responsibilities, dim_data, self.epsilon)
 
         for i, posterior in enumerate(self.niw_posteriors):
             posterior.cluster_mean = cluster_means[i]
             posterior.strength_mean = self.prior_hyperparameters[1]
             posterior.freedom_degrees = self.prior_hyperparameters[2]
-            posterior.precision_matrix = self.prior_hyperparameters[3][i] + np.eye(dim_data) * eps
+            posterior.precision_matrix = self.prior_hyperparameters[3]
 
+        means = []
+        cov_matrices = []
         for i in range(num_iterations):
             print(f"Now at iteration {i}")
 
             self.e_step(x_train, dim_data)
             self.variational_m_step(x_train, dim_data)
-            print(f"self.weights = {self.weights}")
+            acc = self.evaluate_performance(x_train, y_train)
+            print(f"accuracy = {acc}")
+
+            means = [posterior.cluster_mean for posterior in self.niw_posteriors]
+            cov_matrices = [np.linalg.inv(posterior.precision_matrix) for posterior in self.niw_posteriors]
+            log_likelihood = compute_log_likelihood(x_train, dim_data, means, cov_matrices, self.weights)
+            print(f"log_likelihood = {log_likelihood}")
+
+            # choose the model that minimizes aic
+            aic = akaike_information_criterion(log_likelihood, self.no_clusters, dim_data)
+            print(f"akaike_information_criterion = {aic}")
+
+        np.save(out_means, means)
+        np.save(out_covariances, cov_matrices)
+        np.save(out_weights, self.weights)
+
+    def predict(self, x_test, y_test,
+                out_means='../models/bayesian_GMM/means.npy',
+                out_covariances='../models/bayesian_GMM/cov_matrices.npy',
+                out_weights='../models/bayesian_GMM/mixing_weights.npy'):
+
+        if os.path.exists(out_means) and os.path.exists(out_covariances) and os.path.exists(out_weights):
+            print(f"Loading the trained parameters \n")
+
+            mixing_weights = np.load(out_weights)
+            means = np.load(out_means)
+            cov_matrices = np.load(out_covariances)
+
+            acc = self.evaluate_performance(x_test, y_test, mixing_weights, means, cov_matrices, training=False)
+            print(f"accuracy on test data = {acc}")
+        else:
+            print(f"The bayesian mixture model needs to be trained first !\n")
 
 
-    def predict(self, x_test, y_test):
-        pass
+    def evaluate_performance(self, x, y, mixing_weights=None, means=None, cov_matrices=None, training=True):
+
+        x_np = x.to_numpy()
+        y_np = y.to_numpy().flatten()
+
+        cluster_assignments = []
+
+        if training:
+            for idx in range(x_np.shape[0]):
+                result_probs = self.responsibilities[:, idx]
+                result_probs /= np.sum(result_probs)
+                cluster_idx = np.argmax(result_probs)
+                cluster_assignments.append(cluster_idx)
+        else:
+
+            ## wrong, because I need the full distribution over the parameters (miu, sigma, pi_k) in order to make inferences
+            for idx, (x_in, y_true) in enumerate(zip(x_np, y_np)):
+                result_probs = []
+                result_instance = []
+                for k in range(self.no_clusters):
+                    result_instance.append(gaussian_pdf(x_in, len(x_in), cov_matrices[k], means[k]) * mixing_weights[k])
+                result_probs.append(result_instance)
+                result_probs /= np.sum(result_probs)
+                cluster_idx = np.argmax(result_probs)
+                cluster_assignments.append(cluster_idx)
+
+        # assigning the true labels to each gaussian component
+        cluster_labels, mapping = map_clusters(y_np, cluster_assignments, self.no_clusters)
+        acc = accuracy_score(y_np, cluster_labels)
+
+        return acc
 
 
     def compute_log_xi(self, cluster_idx, degrees_of_freedom, cluster_mean, data_in, no_features):
@@ -95,22 +161,21 @@ class BayesianMixtureModel:
 
         # print(f"self.niw_posteriors[cluster_idx].precision_matrix = {self.niw_posteriors[cluster_idx].precision_matrix} \n")
 
-        log_det = log_det_cholesky(self.niw_posteriors[cluster_idx].precision_matrix + np.eye(no_features) * 1e-6)
+        precision_matrix = self.niw_posteriors[cluster_idx].precision_matrix + np.eye(no_features) * self.epsilon
+        log_det = log_det_cholesky(precision_matrix)
 
-        first_term += no_features * np.log(2) + log_det
-        first_term /= 2
-        first_term -= (no_features / 2) * np.log(np.pi * 2)
+        first_term += no_features * np.log(2.0) + log_det
+        first_term /= 2.0
+        first_term -= (no_features / 2.0) * np.log(np.pi * 2.0)
 
         diff = data_in - cluster_mean
         diff = diff.reshape(-1, 1)
 
-        precision_matrix = self.niw_posteriors[cluster_idx].precision_matrix + np.eye(no_features) * 1e-6
-
         second_term += diff.transpose() @ (degrees_of_freedom * precision_matrix) @ diff
-        second_term += no_features / self.niw_posteriors[cluster_idx].strength_mean
-        second_term /= 2
+        trace = (degrees_of_freedom * np.trace(precision_matrix)) / self.niw_posteriors[cluster_idx].strength_mean
+        second_term += trace
 
-        return first_term - second_term
+        return first_term - second_term / 2
 
 
     def e_step(self, x_train, no_features):
@@ -118,31 +183,25 @@ class BayesianMixtureModel:
         update the responsibilities (i.e. the probability that point x_i belongs to each cluster)
         """
         total_weight = np.sum(self.weights)
-        print(f"total_weight = {total_weight} \n")
-        # self.weights = self.weights / total_weight * self.no_clusters
-        #print(f"inainte de for self.responsibilities = {self.responsibilities}")
         log_responsibilities = np.zeros((self.no_clusters, x_train.shape[0]))
+
         for k in range(self.no_clusters):
             for data_idx, row in enumerate(x_train.itertuples()):
                 niu = self.niw_posteriors[k].freedom_degrees
                 cluster_mean = self.niw_posteriors[k].cluster_mean
                 cluster_weight = self.weights[k]
-                # print(f"cluster_weight = {cluster_weight}")
+
                 log_zi_prob = psi(cluster_weight) - psi(total_weight)
                 log_xi_prob = self.compute_log_xi(k, niu, cluster_mean, row[1:], no_features)
-                # print(f"log_zi_prob = {log_zi_prob}")
-                # print(f"log_xi_prob = {log_xi_prob}")
+
                 responsibility = log_zi_prob + log_xi_prob
                 log_responsibilities[k, data_idx] = responsibility
-
-        #print(f"before normalization = {log_responsibilities}")
-        # normalization and subtracting the max to prevent overflows
 
         log_responsibilities -= logsumexp(log_responsibilities, axis=0, keepdims=True)
         self.responsibilities = np.exp(log_responsibilities)
 
-        # print(f"after normalization: {self.responsibilities}")
-        #print(f"self.responsibilities.sum(axis=) = {self.responsibilities.sum(axis=0)}")
+        # sanity check, should sum up to 1
+        # print(f"self.responsibilities.sum(axis=) = {self.responsibilities.sum(axis=0)}")
 
 
     def build_sample_covariance(self, x_train, soft_counts, weighted_means):
@@ -156,20 +215,20 @@ class BayesianMixtureModel:
                 cov_dim += (diff @ diff.transpose()) * self.responsibilities[k, idx]
 
             # print(f"cov_dim = {cov_dim}")
-            # print(f"soft_counts[k] = {soft_counts[k]}")  # should sumt up to 1
+            # print(f"soft_counts[k] = {soft_counts[k]}")  # should sum up to 1
             sample_covariance.append(cov_dim / soft_counts[k])
 
         return np.array(sample_covariance)
 
 
-    def build_coefficient(self, k, soft_count, weighted_mean):
+    def build_coefficient(self, soft_count, weighted_mean):
 
+        # priors: data_mean, strength_mean (the confidence in the data_mean), degree_of_freedom, precision_matrix
         strength_mean = self.prior_hyperparameters[1]
         first_term = (strength_mean * soft_count) / (strength_mean + soft_count)
-        diff = weighted_mean - self.prior_hyperparameters[0]
-        diff = diff.reshape(-1, 1)
+        diff = (weighted_mean - self.prior_hyperparameters[0]).reshape(-1, 1)
 
-        return (diff @ diff.transpose()) * first_term
+        return first_term * (diff @ diff.transpose())
 
 
     def variational_m_step(self, x_train, dim_data):
@@ -177,8 +236,6 @@ class BayesianMixtureModel:
         update the probabilities of the weights(from the dirichlet distribution),
         as well as all the parameters of the NormalInverseWishart: strength_mean, degree_of_freedom, precision_matrix
         """
-
-        # print(f"in m-step: \n self.responsibilities = {self.responsibilities}")
 
         soft_counts = np.zeros(self.no_clusters)
         for k in range(self.no_clusters):
@@ -188,8 +245,7 @@ class BayesianMixtureModel:
         for k in range(self.no_clusters):
             self.weights[k] = self.dirichlet_prior[k] + soft_counts[k]
 
-        # print(f"soft_counts = {soft_counts} \n ")
-        print(f"self.weights = {self.weights}")
+        # print(f"self.weights = {self.weights}")
 
         # new weighted mean
         weighted_means = np.zeros((self.no_clusters, x_train.shape[1]))
@@ -205,19 +261,19 @@ class BayesianMixtureModel:
 
             prior_data_mean = self.prior_hyperparameters[0]
             prior_strength_mean = self.prior_hyperparameters[1]
-            self.niw_posteriors[k].strength_mean += soft_counts[k]
-            self.niw_posteriors[k].freedom_degrees += soft_counts[k]
+
+            # priors: data_mean, strength_mean (the confidence in the data_mean), degree_of_freedom, precision_matrix
+            self.niw_posteriors[k].strength_mean = self.prior_hyperparameters[1] + soft_counts[k]
+            self.niw_posteriors[k].freedom_degrees = self.prior_hyperparameters[2] + soft_counts[k]
 
             mean_contribution = prior_strength_mean * prior_data_mean
             empirical_contribution = soft_counts[k] * weighted_means[k, :]
             self.niw_posteriors[k].cluster_mean = (mean_contribution + empirical_contribution) / self.niw_posteriors[k].strength_mean
 
             observed_data = soft_counts[k] * sample_covariance[k]
-            uncertainty_coefficient = self.build_coefficient(k, weighted_means[k, :], self.prior_hyperparameters[0])
+            uncertainty_coefficient = self.build_coefficient(soft_counts[k], weighted_means[k, :])
 
-            precision_matrix_inv = np.linalg.inv(self.prior_hyperparameters[3][k])
-            new_precision = precision_matrix_inv + observed_data + uncertainty_coefficient + 1e-6 * np.eye(dim_data)
+            precision_matrix_inv = np.linalg.inv(self.prior_hyperparameters[3])
+            new_precision = precision_matrix_inv + observed_data + uncertainty_coefficient
             self.niw_posteriors[k].precision_matrix = np.linalg.inv(new_precision)
-
-
 

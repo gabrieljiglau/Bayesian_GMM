@@ -1,7 +1,10 @@
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
+from sklearn.metrics import confusion_matrix
+from scipy.optimize import linear_sum_assignment
 from scipy.stats import dirichlet
+from scipy.linalg import fractional_matrix_power
 
 def init_cov_matrix(dim: int, small: bool=True):
 
@@ -52,6 +55,17 @@ def relabel_data(num_clusters, cluster_indices, num_classes):
         cluster_labels[i] = np.argmax(frequencies)
     return cluster_labels
 
+def map_clusters(true_labels, cluster_assignments, no_clusters):
+
+    cm = confusion_matrix(true_labels, cluster_assignments, labels=range(no_clusters))
+    # print(f"confusion_matrix = {cm}")
+    rows, cols = linear_sum_assignment(-cm)
+
+    mapping = {cluster: label for cluster, label in zip(rows, cols)}
+    new_assignments = np.array([mapping[cluster] for cluster in cluster_assignments])
+
+    return new_assignments, mapping
+
 def init_cluster_means(x_train, no_clusters):
 
     k_means = KMeans(n_clusters=no_clusters, n_init=1, max_iter=1, random_state=13)
@@ -90,21 +104,6 @@ def _weighted_mean(x_train, no_clusters, soft_counts):
         weighted_means[k, :] /= norm_term
     return weighted_means
 
-
-def init_precision_matrix(x_train, labels, no_clusters, soft_counts, dim_data):
-
-    weighted_means = _weighted_mean(x_train, no_clusters, soft_counts)
-    covariance_matrices = []
-    for k in range(no_clusters):
-        covariance_matrix = 0
-        for data_idx, x_row in enumerate(x_train.itertuples()):
-            data_diff = x_row[1:] - weighted_means[labels[data_idx]]
-            data_diff = data_diff.reshape(-1, 1)
-            covariance_matrix += (data_diff @ data_diff.transpose()) * soft_counts[k][data_idx]
-        covariance_matrices.append(covariance_matrix / x_train.shape[0])
-
-    return [np.linalg.inv(cov_matrix + np.eye(dim_data) * 1e-6) for cov_matrix in covariance_matrices]
-
 def _data_mean(x_train):
 
     data_mean = np.zeros(x_train.shape[1])
@@ -113,8 +112,48 @@ def _data_mean(x_train):
         data_mean[i] = dimension_mean
     return data_mean
 
-def init_priors(x_train, labels, no_clusters, soft_counts, dim_data):
+def init_priors(x_train, labels, no_clusters, soft_counts, dim_data, epsilon):
 
-    return [_data_mean(x_train), 1, x_train.shape[1] + 2,
-            init_precision_matrix(x_train, labels, no_clusters, soft_counts, dim_data)]
+    """
+    return priors: data_mean, strength_mean (the confidence in the data_mean), degree_of_freedom, precision_matrix
+    """
+
+    return [_data_mean(x_train), 1, x_train.shape[1] + 2, (np.eye(dim_data) * epsilon) + np.eye(dim_data)]
+
+def gaussian_pdf(instance, dim_data, covariance, mean):
+    # instance is a real valued vector
+    denominator =  ((2 * np.pi) ** dim_data / 2) * np.sqrt(np.linalg.det(covariance))
+    diff = instance - mean
+    cov_inverse = fractional_matrix_power(covariance, -1)
+    exp_term = np.exp(-1/2 * (diff.transpose() @ cov_inverse @ diff))
+
+    return exp_term / denominator
+
+def compute_log_likelihood(x_train, dim_data, cluster_means, cov_matrices, mixing_weights):
+
+    log_likelihood = 0
+    for row in x_train.itertuples():
+        prob_sum = 0
+        for i in range(len(cluster_means)):
+            x_values = np.array(row[1:])
+            prob_sum += mixing_weights[i] * gaussian_pdf(x_values, dim_data, cov_matrices[i], cluster_means[i])
+        log_likelihood += np.log(prob_sum + 1e-12)
+
+    return log_likelihood
+
+def get_free_parameters(K, d):
+    ## believe me
+    """
+    :return: the number of free parameters for a gaussian mixture model, with K clusters, d-dim_data
+    """
+
+    return int(K * d + K * d * (d + 1)/2 + (K - 1))
+
+
+def akaike_information_criterion(log_likelihood, K, dim_data):
+    """
+    :return: the badness of fit for the model to the dataset;
+    TLDR: the higher this number is, the worse
+    """
+    return -2 * log_likelihood + 2 * get_free_parameters(K, dim_data)
 
