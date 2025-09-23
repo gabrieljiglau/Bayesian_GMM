@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import arviz as az
 from scipy.stats import dirichlet
 from sklearn.metrics import accuracy_score
 from scipy.special import logsumexp, psi  # psi is the logarithmic derivative of the gamma function
@@ -36,7 +37,7 @@ class BayesianMixtureModel:
         self.posteriors = [object.__new__(PosteriorParameters) for _ in range (no_clusters)]
         self.responsibilities = []
         self.epsilon = epsilon
-        self.weights = [1 / no_clusters for _ in range (no_clusters)]
+        self.dirichlet_params = [1 / no_clusters for _ in range (no_clusters)]  # for the dirichlet distribution
 
 
     def train(self, num_iterations, x_train, y_train,
@@ -64,39 +65,44 @@ class BayesianMixtureModel:
             self.posteriors[i].degrees_of_freedom = self.priors.degrees_of_freedom
             self.posteriors[i].scale_matrix = self.priors.scale_matrix
 
-        means = []
         scale_matrices = []
+        strength_means = []
+        degrees_of_freedom = []
+        cluster_means = []
         for i in range(num_iterations):
             print(f"Now at iteration {i}")
 
             self.variational_e_step(x_train, dim_data)
             self.variational_m_step(x_train, dim_data)
-            acc = self.evaluate_performance(x_train, y_train)
+
+            cluster_means = [posterior.cluster_mean for posterior in self.posteriors]
+            scale_matrices = [posterior.scale_matrix for posterior in self.posteriors]
+            strength_means = [posterior.strength_mean for posterior in self.posteriors]
+            degrees_of_freedom = [posterior.degrees_of_freedom for posterior in self.posteriors]
+
+            acc = self.evaluate_performance(x_train, y_train, self.dirichlet_params, strength_means, cluster_means,
+                                            degrees_of_freedom, scale_matrices)
             print(f"accuracy = {acc}")
 
-            means = [posterior.cluster_mean for posterior in self.posteriors]
-            scale_matrices = [posterior.scale_matrix for posterior in self.posteriors]
-
-            log_likelihood = compute_log_likelihood(x_train, dim_data, means, scale_matrices, self.weights)
+            log_likelihood = compute_log_likelihood(x_train, dim_data, cluster_means, scale_matrices,
+                                                    self.dirichlet_params / np.sum(self.dirichlet_params))
             print(f"log_likelihood = {log_likelihood}")
 
             # choose the model that minimizes aic
             aic = akaike_information_criterion(log_likelihood, self.no_clusters, dim_data)
             print(f"akaike_information_criterion = {aic}")
-            print(f"self.weights = {self.weights}")
+            print(f"dirichlet_params = {self.dirichlet_params}")
+            print(f"actual mixing weights = {self.dirichlet_params / np.sum(self.dirichlet_params)}")
 
             # print(f"self.responsibilities = {self.responsibilities[0]}")
 
-        strength_means = [posterior.strength_mean for posterior in self.posteriors]
-        degrees_list = [posterior.degrees_of_freedom for posterior in self.posteriors]
-
-        print(f"weights = {self.weights}")
+        print(f"weights = {self.dirichlet_params}")
 
         np.save(out_strength_means, strength_means)
-        np.save(out_degrees_of_freedom, degrees_list)
-        np.save(out_means, means)
+        np.save(out_degrees_of_freedom, degrees_of_freedom)
+        np.save(out_means, cluster_means)
         np.save(out_scale_matrices, scale_matrices)
-        np.save(out_weights, self.weights)
+        np.save(out_weights, self.dirichlet_params)
 
     def predict(self, x_test, y_test, num_samples=30,
                 out_strength_means='../models/bayesian_GMM/strength_means.npy',
@@ -118,14 +124,13 @@ class BayesianMixtureModel:
             miu_samples = []
             sigma_samples = []
 
+            # sample from the posterior
             for k in range(self.no_clusters):
                 miu_sample = []
                 sigma_sample = []
                 for i in range(num_samples):
                     cov_matrix = sample_covariance(pe_degrees_of_freedom[k], np.linalg.inv(pe_precision_matrices[k]))
-                    # print(f"cov_matrix = {cov_matrix}")
                     sigma_sample.append(cov_matrix)
-                    # miu_point_estimate, covariance_matrix, strength_mean
                     miu_sample.append(sample_mean(pe_means[k], cov_matrix, pe_strength_means[k]))
 
                 sigma_samples.append(sigma_sample)
@@ -134,43 +139,39 @@ class BayesianMixtureModel:
             miu_samples = np.array(miu_samples)
             sigma_samples = np.array(sigma_samples)
 
-            acc = self.evaluate_performance(x_test, y_test, pe_mixing_weights, np.mean(miu_samples, axis=1),
-                                            np.mean(sigma_samples, axis=1), training=False)
+            acc = self.evaluate_performance(x_test, y_test, pe_mixing_weights, pe_strength_means, np.mean(miu_samples, axis=1),
+                                            pe_degrees_of_freedom, np.mean(sigma_samples, axis=1))
             print(f"accuracy on test data = {acc}")
+            return miu_samples, sigma_samples
         else:
-            print(f"The bayesian mixture model needs to be trained first !\n")
+            raise RuntimeError(f"The bayesian mixture model needs to be trained first !\n")
 
-
-    def evaluate_performance(self, x, y, training=False):
+    def evaluate_performance(self, x, y, dirichlet_params, strength_means, cluster_means, degrees_of_freedom, scale_matrices):
 
         x_np = x.to_numpy()
         y_np = y.to_numpy().flatten()
 
         cluster_assignments = []
-        if training:
-            for idx in range(x_np.shape[0]):
-                result_probs = self.responsibilities[:, idx]
-                result_probs /= np.sum(result_probs)
-                cluster_idx = np.argmax(result_probs)
-                cluster_assignments.append(cluster_idx)
-        else:
-            for idx, (x_in, y_true) in enumerate(zip(x_np, y_np)):
-                result_probs = []
-                result_instance = []
-                for k in range(self.no_clusters):
-                    nominator = (self.posteriors[k].strength_mean + 1) * self.posteriors[k].scale_matrix
-                    denominator = self.posteriors[k].degrees_of_freedom - len(x_in) + 1
-                    denominator *= self.posteriors[k].strength_mean
-                    scale_matrix = nominator / denominator
 
-                    result_instance.append(student_t_pdf(x_in, self.posteriors[k].degrees_of_freedom, len(x_in),
-                                                         self.posteriors[k].cluster_mean, scale_matrix)
-                                           * (self.weights[k] / np.sum(self.weights)))
-                result_probs.append(result_instance)
-                # print(f"result_probs = {result_probs}")
-                result_probs /= np.sum(result_probs)
-                cluster_idx = np.argmax(result_probs)
-                cluster_assignments.append(cluster_idx)
+        alpha = np.array(dirichlet_params, dtype=float)
+        mixing_weights = alpha / np.sum(alpha)
+
+        for idx, (x_in, y_true) in enumerate(zip(x_np, y_np)):
+            result_probs = []
+            result_instance = []
+            for k in range(self.no_clusters):
+                nominator = (strength_means[k] + 1) * scale_matrices[k]
+                denominator = degrees_of_freedom[k] - len(x_in) + 1
+                denominator *= strength_means[k]
+                scale_matrix = nominator / denominator
+
+                result_instance.append(student_t_pdf(x_in, degrees_of_freedom[k], len(x_in), cluster_means[k],
+                                                     scale_matrix) * mixing_weights[k])
+            result_probs.append(result_instance)
+            # print(f"result_probs = {result_probs}")
+            result_probs /= np.sum(result_probs)
+            cluster_idx = np.argmax(result_probs)
+            cluster_assignments.append(cluster_idx)
 
         # assigning the true labels to each gaussian component
         cluster_labels, mapping = map_clusters(y_np, cluster_assignments, self.no_clusters)
@@ -187,7 +188,7 @@ class BayesianMixtureModel:
         log_responsibilities = np.zeros((self.no_clusters, x_train.shape[0]))
         for k in range(self.no_clusters):
 
-            log_pi_expectation = psi(self.weights[k]) - psi(np.sum(self.weights))
+            log_pi_expectation = psi(self.dirichlet_params[k]) - psi(np.sum(self.dirichlet_params))
             for idx, x_row in enumerate(x_train.itertuples()):
 
                 nominator = (self.posteriors[k].strength_mean + 1) * self.posteriors[k].scale_matrix
@@ -246,9 +247,7 @@ class BayesianMixtureModel:
 
         # weights update
         for k in range(self.no_clusters):
-            self.weights[k] = self.priors.dirichlet_prior[k] + soft_counts[k]
-
-        # print(f"self.weights = {self.weights}")
+            self.dirichlet_params[k] = self.priors.dirichlet_prior[k] + soft_counts[k]
 
         # new weighted mean
         weighted_means = np.zeros((self.no_clusters, x_train.shape[1]))
@@ -259,10 +258,9 @@ class BayesianMixtureModel:
 
         sample_cov = self.build_sample_covariance(x_train, soft_counts, weighted_means)
 
-        # NIW parameter updates
+        # NIW posterior parameter updates
         for k in range(self.no_clusters):
 
-            # priors: data_mean, strength_mean (the confidence in the data_mean), degree_of_freedom, scale_matrix
             self.posteriors[k].strength_mean = self.priors.strength_mean + soft_counts[k]
             self.posteriors[k].degrees_of_freedom = self.priors.degrees_of_freedom + soft_counts[k]
 

@@ -1,7 +1,7 @@
 import os
 import numpy as np
 import pandas as pd
-from numpy import shape
+import arviz as az
 from sklearn.metrics import confusion_matrix
 from scipy.optimize import linear_sum_assignment
 from scipy.stats import invwishart, multivariate_normal
@@ -63,12 +63,12 @@ def map_clusters(true_labels, cluster_assignments, no_clusters):
     # print(f"confusion_matrix = {cm}")
     rows, cols = linear_sum_assignment(-cm)
 
-    mapping = {cluster: label for cluster, label in zip(rows, cols)}
+    mapping = {col: row for row, col in zip(rows, cols)}
     new_assignments = np.array([mapping[cluster] for cluster in cluster_assignments])
 
     return new_assignments, mapping
-def sample_covariance(degrees_of_freedom, precision_matrix):
-    return invwishart.rvs(df=degrees_of_freedom, scale=np.linalg.inv(precision_matrix))
+def sample_covariance(degrees_of_freedom, scale_matrix):
+    return invwishart.rvs(df=degrees_of_freedom, scale=np.linalg.inv(scale_matrix))
 
 def sample_mean(miu_point_estimate, covariance_matrix, strength_mean):
     covariance_matrix = np.array(covariance_matrix)
@@ -129,13 +129,17 @@ def log_det_cholesky(matrix):
 
 def student_t_pdf(x_in, degrees_of_freedom, dim_data, cluster_mean, scale_matrix):
 
+    scale_matrix = (scale_matrix * scale_matrix.transpose()) / 2
+
     nominator = gammaln((degrees_of_freedom + dim_data) / 2)
     denominator = gammaln(degrees_of_freedom / 2) * ((degrees_of_freedom * np.pi) ** dim_data / 2)
+    # print(f"scale_matrix = {scale_matrix}")
+    # print(f"np.linalg.det(scale_matrix) = {np.linalg.det(scale_matrix)}")
     denominator *= np.sqrt(np.linalg.det(scale_matrix))
 
     diff = (x_in - cluster_mean).reshape(-1, 1)
     free_term = (1 + (1 / degrees_of_freedom) * (diff.transpose() @ np.linalg.inv(scale_matrix) @ diff))
-    # print(f"degrees_of_freedom = {degrees_of_freedom}, dim_data = {dim_data}")
+    # print(f"degrees_of_freedom = {degrees_of_freedom}")
     free_term **= ((degrees_of_freedom + dim_data) / -2)
 
     return (nominator / denominator) * free_term
@@ -168,3 +172,20 @@ def akaike_information_criterion(log_likelihood, K, dim_data):
     """
     return -2 * log_likelihood + 2 * get_free_parameters(K, dim_data)
 
+def build_trace(miu_samples, sigma_samples):
+
+    no_clusters, num_samples, no_dims = miu_samples.shape
+
+    miu_dict = {}
+    for k in range(no_clusters):
+        for d in range(no_dims):
+            miu_dict[f"mu_{k}_{d}"] = miu_samples[k, :, d]
+
+    sigma_dict = {}
+    for k in range(no_clusters):
+        for i in range(no_dims):
+            for j in range(no_dims):
+                sigma_dict[f"sigma_{k}_{i}_{j}"] = sigma_samples[k][np.newaxis, :, :, :]
+
+    posterior_dict = {**miu_dict, **sigma_dict}
+    return az.from_dict(posterior_dict)
