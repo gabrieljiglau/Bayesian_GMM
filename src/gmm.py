@@ -77,8 +77,8 @@ class MixtureModel:
         np.save(out_weights, mixing_weights)
         return self
 
-    def predict(self, x_test, y_test, out_means='../models/means.npy', out_covariances='../models/cov_matrices.npy',
-                out_weights='../models/mixing_weights.npy'):
+    def predict(self, x_test, y_test, out_means='../models/standard_GMM/means.npy',
+                out_covariances='../models/standard_GMM/cov_matrices.npy', out_weights='../models/standard_GMM/mixing_weights.npy'):
 
         if os.path.exists(out_means) and os.path.exists(out_covariances) and os.path.exists(out_weights):
             print(f"Loading the trained parameters \n")
