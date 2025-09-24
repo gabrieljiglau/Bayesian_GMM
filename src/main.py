@@ -29,7 +29,7 @@ if __name__ == '__main__':
     bayesian_gmm = BayesianMixtureModel(K,)
     # bayesian_gmm.train(20, x_train, y_train)
 
-    miu_samples, sigma_samples = bayesian_gmm.predict(x_test, y_test)
+    miu_samples, sigma_samples, num_samples = bayesian_gmm.predict(x_test, y_test)
     trace = build_trace(miu_samples, sigma_samples)
 
     # print(trace.posterior)
@@ -37,16 +37,18 @@ if __name__ == '__main__':
 
     az.plot_trace(trace, var_names=[f"mu_{k}_{d}" for k in range(K) for d in range(x_test.shape[1])], figsize=(12, 8))
     plt.savefig('../plots/means_posterior.png', bbox_inches='tight')
+    
+    az.plot_posterior(trace, var_names=[f"mu_{k}_{d}" for k in range(K) for d in range(x_test.shape[1])],
+                   hdi_prob=0.95, figsize=(14, 10))
+    plt.tight_layout()
+    plt.savefig('../plots/means_95hdi.png')
 
     for k in range(K):
-        axes = az.plot_trace(trace, var_names=[f"sigma_{k}_{i}_{j}"
+        axes = az.plot_posterior(trace, var_names=[f"sigma_{k}_{i}_{j}"
                                         for i in range(x_test.shape[1])
-                                        for j in range(x_test.shape[1])]
-                                        , figsize=(12, 8))
-        # monocolor
-        for ax_row in axes:
-            for ax in ax_row:
-                for line in ax.get_lines():
-                    line.set_color("blue")
-        plt.savefig(f"../plots/covariance_posterior_{k}.png", bbox_inches='tight')
+                                        for j in range(x_test.shape[1])],
+                                        hdi_prob=0.95,
+                                        figsize=(24, 16))
+        plt.tight_layout()
+        plt.savefig(f"../plots/covariance{k}_95hdi.png", bbox_inches='tight')
 

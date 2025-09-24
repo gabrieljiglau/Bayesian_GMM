@@ -45,7 +45,7 @@ class BayesianMixtureModel:
               out_degrees_of_freedom='../models/bayesian_GMM/degrees_of_freedom.npy',
               out_means='../models/bayesian_GMM/means.npy',
               out_scale_matrices='../models/bayesian_GMM/scale_matrices.npy',
-              out_weights='../models/bayesian_GMM/mixing_weights.npy'):
+              out_weights='../models/bayesian_GMM/dirichlet_params.npy'):
 
         dim_data = x_train.shape[1]
         self.responsibilities = np.zeros((self.no_clusters, x_train.shape[0]))
@@ -109,7 +109,7 @@ class BayesianMixtureModel:
                 out_degrees_of_freedom='../models/bayesian_GMM/degrees_of_freedom.npy',
                 out_means='../models/bayesian_GMM/means.npy',
                 out_scale_matrices='../models/bayesian_GMM/scale_matrices.npy',
-                out_weights='../models/bayesian_GMM/mixing_weights.npy'):
+                out_weights='../models/bayesian_GMM/dirichlet_params.npy'):
 
         if hyperparameters_exist(out_strength_means, out_degrees_of_freedom, out_means, out_scale_matrices, out_weights):
             print(f"Loading the trained parameters \n")
@@ -142,7 +142,7 @@ class BayesianMixtureModel:
             acc = self.evaluate_performance(x_test, y_test, pe_mixing_weights, pe_strength_means, np.mean(miu_samples, axis=1),
                                             pe_degrees_of_freedom, np.mean(sigma_samples, axis=1))
             print(f"accuracy on test data = {acc}")
-            return miu_samples, sigma_samples
+            return miu_samples, sigma_samples, num_samples
         else:
             raise RuntimeError(f"The bayesian mixture model needs to be trained first !\n")
 

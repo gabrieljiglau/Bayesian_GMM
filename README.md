@@ -67,3 +67,42 @@ using Lagrange's method, with the constraint that the mixing weights sum up to 1
 
 ---
 ### Bayesian GMM
+
+The difference between the frequentist GMM and the Bayesian GMM is how the parameters of the gaussians are treated.
+In GMM, the means and the covariance matrices are considered fixed, meanwhile in the Bayesian GMM these are random variables.
+
+The task is to compute the intractable posterior P(π, μ, Σ, Z | X ). There are 2 methods: i) sampling (Gibbs sampling, MCMC)
+and ii) VI (variational inference).
+
+My implementation uses VI, which approximates the posterior using a 'simpler' tractable distribution, obtained by using
+mean field approximation (assume independence between groups of probability distributions). P(π, μ, Σ, Z | X ) ~ q(π, μ, Σ, Z | X)
+
+By using the multiplication rule q(π, μ, Σ, Z | X) = P(π) * P(μ, Σ | π) * P(Z | μ, Σ, π) * P (X | Z, μ, Σ, π)
+
+Conjugate priors are used, in order to have closed-form updates (no sampling needed).
+
+P(π) ~ Dirichlet (α), multivariate generalization of the Beta distribution, prior to the Categorical distribution z_i ~ Categorical(π)
+
+the choice for Σ influences μ, such that we consider a hierarchical prior Normal Inverse Wishart (μ_0, k, v, Ψ)
+
+first sample a covariance Σ ~ Inverse Wishart (v, Ψ) (probability distribution over positive definite matrices), 
+with Wishart distribution being the multivariate generalization of the Gamma distribution
+,then given a covariance Σ, sample a mean μ | Σ ~ Normal (μ_0, 1/k, Σ ).
+
+The iterative optimization process is similar to EM and alternates between a i)variational E-step and a ii)variational M-step.
+
+in i) update responsibilities r_ik = exp (E_qπ [log_πk]) + Σ_q(μ_k, Σ_k) [log P(x_i | μ_k, Σ_k)]
+
+in ii) update the parameters of the Dirichlet distribution, as well as NIW
+N_k (soft count) = Σ(over i) r_ik, x_k_bar = Σ(over i) r_ik * x_i / N_k, S_k = (Σ(over i) r_ik *(x_i - x_k_bar)*(x_i - x_k_bar).T) / N_k
+
+Dirichlet distribution: α_k = α_prior_k + N_k
+NIW: β_k = β_prior_k + N_k, μ_k = (β_prior_k * μ_prior + N_k * x_k_bar) / β_k, v_k = v_prior_k + N_k,
+Ψ = Ψ_prior + N_k * S_k + (β_0 * N_k / β_k) * ((x_k_bar - μ_prior)*(x_k_bar - μ_prior).T)
+
+---
+
+One considerable advantage of the Bayesian GMM consists of  its ability to model the uncertainty of the data (and visualization: see Arviz),
+instead of relying on hard parameters, although this comes with an increased complexity in the mathematical apparatus required for such computations.
+
+
